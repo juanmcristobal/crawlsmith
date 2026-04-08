@@ -1,0 +1,64 @@
+name: Publish
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          architecture: "x64"
+
+      - name: Verify tag matches package version
+        env:
+          GIT_TAG: ${{ github.ref_name }}
+        run: |
+          python - <<'PY'
+          import os
+          import pathlib
+          import re
+          import sys
+
+          setup_py = pathlib.Path("setup.py").read_text()
+          match = re.search(r"version='([^']+)'", setup_py)
+          if not match:
+              sys.exit("Could not find package version in setup.py")
+
+          package_version = match.group(1)
+          tag_version = os.environ["GIT_TAG"].removeprefix("v")
+
+          if tag_version != package_version:
+              sys.exit(
+                  f"Tag version {tag_version!r} does not match package version "
+                  f"{package_version!r}"
+              )
+
+          print(f"Publishing version {package_version}")
+          PY
+
+      - name: Install build tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build twine
+
+      - name: Build distributions
+        run: python -m build
+
+      - name: Check distributions
+        run: twine check dist/*
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

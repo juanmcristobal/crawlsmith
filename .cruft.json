@@ -1,0 +1,22 @@
+{
+  "template": "git@github.com:juanmcristobal/pypackage-basic.git",
+  "commit": "180228fdc908a9b8281686705da1e407cacb7407",
+  "checkout": null,
+  "context": {
+    "cookiecutter": {
+      "full_name": "Juan Manuel Cristóbal Moreno",
+      "email": "juanmcristobal",
+      "github_username": "juanmcristobal",
+      "project_name": "crawlsmith",
+      "project_slug": "crawlsmith",
+      "project_short_description": "Crawlsmith helps you craft reliable web crawlers in Python, combining page fetching, HTML parsing, link discovery, and content extraction into a simple and extensible toolkit.",
+      "version": "0.1.0",
+      "private_repo": "y",
+      "command_line_interface": "Click",
+      "__pypackage_version": "0.1.0",
+      "_template": "git@github.com:juanmcristobal/pypackage-basic.git",
+      "_commit": "180228fdc908a9b8281686705da1e407cacb7407"
+    }
+  },
+  "directory": null
+}
