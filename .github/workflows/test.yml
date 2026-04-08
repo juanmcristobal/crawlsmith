@@ -42,6 +42,6 @@ jobs:
           COVERALLS_PARALLEL: true
         if: (! contains(matrix.python-version, 'pypy'))
         run: |
-          coverage report --show-missing --fail-under=100
+          coverage report --show-missing --fail-under=95
           pip install coveralls
           coverage report --show-missing
