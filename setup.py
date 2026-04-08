@@ -19,7 +19,7 @@ test_requirements = ['pytest>=3', ]
 
 setup(
     author="Juan Manuel Cristóbal Moreno",
-    author_email='juanmcristobal',
+    author_email='juanmcristobal@gmail.com',
     python_requires='>=3.10',
     classifiers=[
         'Intended Audience :: Developers',
