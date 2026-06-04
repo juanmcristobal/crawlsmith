@@ -22,9 +22,10 @@ except ImportError:  # pragma: no cover - exercised only without dependency inst
     curl_errors = None
 
 try:
-    from markdownify import markdownify as html_to_markdown
+    from domdown import DomdownOptions, html_to_markdown
 except ImportError:  # pragma: no cover - exercised only without dependency installed
     html_to_markdown = None
+    DomdownOptions = None
 
 
 ERROR_TYPE_TIMEOUT = "TIMEOUT"
@@ -171,6 +172,7 @@ class FetchResult:
     via_proxy: bool = False
     proxy_url: str | None = None
     content_length: int = 0
+    markdown_length: int = 0
     is_blocked: bool = False
 
     def to_dict(self) -> dict[str, Any]:
@@ -337,10 +339,26 @@ def _looks_like_xml_document(content: str) -> bool:
     )
 
 
-def _convert_html_to_markdown(content: str) -> str:
+def _convert_html_to_markdown(content: str, base_url: str | None = None) -> str:
+    """Convert HTML to Markdown using domdown."""
     if html_to_markdown is not None and not _looks_like_xml_document(content):
-        return html_to_markdown(content, heading_style="ATX").strip()
+        try:
+            # Use domdown with sensible defaults
+            options = DomdownOptions(
+                base_url=base_url,
+                emit_frontmatter=True,
+                extract_metadata=True,
+                prefer_article_body=True,
+                preserve_images=True,
+                preserve_tables=True,
+                preserve_code_blocks=True,
+            )
+            return html_to_markdown(content, options).strip()
+        except Exception:
+            # Fallback to basic conversion on error
+            pass
 
+    # Fallback regex conversion (when domdown unavailable or fails)
     text = content
     replacements = (
         (r"<h1[^>]*>(.*?)</h1>", r"# \1\n\n"),
@@ -580,16 +598,18 @@ class StealthRequest:
                     )
 
                 if status == 200:
+                    markdown_text = _convert_html_to_markdown(text, base_url=url)
                     return FetchResult(
                         ok=True,
                         url=url,
                         status=status,
                         content=text,
-                        markdown=_convert_html_to_markdown(text),
+                        markdown=markdown_text,
                         metadata=metadata,
                         via_proxy=proxy is not None,
                         proxy_url=proxy_url,
                         content_length=content_length,
+                        markdown_length=len(markdown_text),
                         is_blocked=False,
                     )
 
@@ -603,6 +623,7 @@ class StealthRequest:
                     via_proxy=proxy is not None,
                     proxy_url=proxy_url,
                     content_length=content_length,
+                    markdown_length=0,
                     is_blocked=False,
                 )
             except _CURL_REQUESTS_AND_TIMEOUT_TYPES as exc:
@@ -615,6 +636,8 @@ class StealthRequest:
                     error=message,
                     via_proxy=proxy is not None,
                     proxy_url=proxy_url,
+                    content_length=0,
+                    markdown_length=0,
                     is_blocked=False,
                 )
 
