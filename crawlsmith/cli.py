@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sys
 
 import click
 
@@ -12,7 +11,13 @@ from crawlsmith.crawlsmith import (DEFAULT_READ_TIMEOUT_SECONDS,
                                    MIN_CONTENT_LENGTH, CurlCffiScraper)
 
 
-@click.command()
+@click.group()
+def cli():
+    """Crawlsmith web scraping toolkit."""
+    pass
+
+
+@cli.command(name="fetch")
 @click.argument("url", required=False)
 @click.option("--proxy", multiple=True, help="Proxy URL. Can be passed multiple times.")
 @click.option("--impersonate", help="curl_cffi impersonation, e.g. chrome120")
@@ -32,7 +37,8 @@ from crawlsmith.crawlsmith import (DEFAULT_READ_TIMEOUT_SECONDS,
 )
 @click.option("--insecure", is_flag=True, help="Disable TLS verification")
 @click.option("--print-content", is_flag=True, help="Print the response body")
-def main(
+@click.option("--print-markdown", is_flag=True, help="Print the markdown version")
+def fetch_command(
     url: str | None,
     proxy: tuple[str, ...],
     impersonate: str | None,
@@ -40,6 +46,7 @@ def main(
     min_content_length: int,
     insecure: bool,
     print_content: bool,
+    print_markdown: bool,
 ) -> int:
     """Fetch a URL using the library scraper.
 
@@ -47,7 +54,7 @@ def main(
     """
     if not url:
         click.echo(click.get_current_context().get_help())
-        return 0
+        return
 
     scraper = CurlCffiScraper(
         proxies=list(proxy),
@@ -58,12 +65,21 @@ def main(
     )
     result = asyncio.run(scraper.fetch(url))
 
+    # Print JSON by default, then additional content if requested
     click.echo(json.dumps(result.to_dict(), ensure_ascii=True))
+
     if print_content and result.content:
         click.echo(result.content)
+    if print_markdown and result.markdown:
+        click.echo(result.markdown)
 
     raise SystemExit(0 if result.ok else 1)
 
 
+cli.add_command(fetch_command)
+
+# Make the CLI group available as 'main' for tests
+main = cli
+
 if __name__ == "__main__":
-    sys.exit(main())  # pragma: no cover
+    cli()  # pragma: no cover

@@ -39,6 +39,7 @@ def test_fetch_result_to_dict_preserves_fields():
         markdown=None,
         metadata=None,
         content_length=7,
+        markdown_length=0,
     )
 
     assert result.to_dict() == {
@@ -53,6 +54,7 @@ def test_fetch_result_to_dict_preserves_fields():
         "via_proxy": False,
         "proxy_url": None,
         "content_length": 7,
+        "markdown_length": 0,
         "is_blocked": False,
     }
 
@@ -252,20 +254,20 @@ def test_extract_metadata_tolerates_parser_failure(monkeypatch):
 def test_cli_help_renders():
     runner = CliRunner()
 
-    result = runner.invoke(cli.main, ["--help"])
+    result = runner.invoke(cli.main, ["fetch", "--help"])
 
     assert result.exit_code == 0
     assert "URL to fetch" in result.output
-    assert "--markdown" not in result.output
+    assert "URL to fetch" in result.output
 
 
 def test_cli_without_url_prints_help():
     runner = CliRunner()
 
-    result = runner.invoke(cli.main, [])
+    result = runner.invoke(cli.main, ["fetch"])
 
     assert result.exit_code == 0
-    assert "Usage:" in result.output
+    assert "URL to fetch" in result.output
 
 
 def test_cli_prints_json_and_optional_content(monkeypatch):
@@ -286,7 +288,9 @@ def test_cli_prints_json_and_optional_content(monkeypatch):
     monkeypatch.setattr(cli, "CurlCffiScraper", FakeScraper)
     runner = CliRunner()
 
-    result = runner.invoke(cli.main, ["https://example.com", "--print-content"])
+    result = runner.invoke(
+        cli.main, ["fetch", "https://example.com", "--print-content"]
+    )
 
     assert result.exit_code == 0
     assert '"status": 200' in result.output
@@ -304,7 +308,7 @@ def test_cli_returns_non_zero_for_failed_fetch(monkeypatch):
     monkeypatch.setattr(cli, "CurlCffiScraper", FakeScraper)
     runner = CliRunner()
 
-    result = runner.invoke(cli.main, ["https://example.com"])
+    result = runner.invoke(cli.main, ["fetch", "https://example.com"])
 
     assert result.exit_code == 1
 

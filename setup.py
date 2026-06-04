@@ -33,7 +33,7 @@ setup(
     description="Crawlsmith helps you craft reliable web crawlers in Python, combining page fetching, HTML parsing, link discovery, and content extraction into a simple and extensible toolkit.",
     entry_points={
         'console_scripts': [
-            'crawlsmith=crawlsmith.cli:main',
+            'crawlsmith=crawlsmith.cli:cli',
         ],
     },
     install_requires=required,

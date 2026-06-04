@@ -282,7 +282,7 @@ The package installs a `crawlsmith` command for quick fetches from the terminal.
 ### Basic CLI Request
 
 ```bash
-crawlsmith https://example.com
+crawlsmith fetch https://example.com
 ```
 
 The CLI prints a JSON-serialized `FetchResult` to stdout.
@@ -290,13 +290,22 @@ The CLI prints a JSON-serialized `FetchResult` to stdout.
 ### Print the Response Body
 
 ```bash
-crawlsmith https://example.com --print-content
+crawlsmith fetch --url https://example.com --print-content
 ```
+
+### Print Markdown Version
+
+```bash
+crawlsmith fetch --url https://example.com --print-markdown
+```
+
+The Markdown output includes YAML frontmatter with metadata (title, author, tags, etc.) followed by clean, readable content.
+
 
 ### Use One or More Proxies
 
 ```bash
-crawlsmith https://example.com \
+crawlsmith fetch --url https://example.com \
   --proxy http://user:pass@proxy-1.example:8080 \
   --proxy http://user:pass@proxy-2.example:8080 \
   --min-content-length 2000
@@ -305,17 +314,17 @@ crawlsmith https://example.com \
 ### Force an Impersonation Profile
 
 ```bash
-crawlsmith https://example.com --impersonate chrome120
+crawlsmith fetch --url https://example.com --impersonate chrome120
 ```
 
 ### Change Timeout or Disable TLS Verification
 
 ```bash
-crawlsmith https://example.com --timeout 20
+crawlsmith fetch --url https://example.com --timeout 20
 ```
 
 ```bash
-crawlsmith https://example.com --insecure
+crawlsmith fetch --url https://example.com --insecure
 ```
 
 ### CLI Exit Codes
@@ -327,6 +336,7 @@ crawlsmith https://example.com --insecure
 
 ```bash
 crawlsmith --help
+crawlsmith fetch --help
 ```
 
 ## Result Model
