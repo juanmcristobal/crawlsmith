@@ -9,7 +9,7 @@ interstitials, and returning structured metadata in a single result object.
 It is designed for Python developers who want a small, pragmatic interface for:
 
 - fetching HTML or XML content
-- converting HTML to Markdown
+- converting HTML to Markdown via [`domdown`](https://github.com/juanmcristobal/domdown) — turns article-like web pages into clean, structured Markdown with frontmatter, image/table/code preservation, and article body extraction
 - rotating browser impersonation profiles
 - trying multiple proxies
 - classifying HTTP and network failures
