@@ -142,6 +142,37 @@ def test_convert_html_to_markdown_extracts_readable_text():
     assert "Hello **world**." in markdown
 
 
+def test_convert_html_to_markdown_adds_frontmatter_fallbacks(monkeypatch):
+    html = "<html><body><p>Body</p></body></html>"
+    captured = {}
+
+    class FakeOptions:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    def fake_html_to_markdown(content, options):
+        assert content == html
+        assert options is not None
+        return "---\n---\nBody"
+
+    monkeypatch.setattr(crawlsmith_module, "DomdownOptions", FakeOptions)
+    monkeypatch.setattr(crawlsmith_module, "html_to_markdown", fake_html_to_markdown)
+
+    markdown = _convert_html_to_markdown(
+        html,
+        base_url="https://t.me/SBUkr/17916",
+    )
+
+    assert markdown == "---\n---\nBody"
+    assert captured["base_url"] == "https://t.me/SBUkr/17916"
+    assert captured["frontmatter_opts"] == {
+        "canonical_url": "https://t.me/SBUkr/17916",
+        "source": "https://t.me/SBUkr/17916",
+    }
+    assert captured["emit_frontmatter"] is True
+    assert captured["extract_metadata"] is True
+
+
 def test_convert_html_to_markdown_skips_xml_warning_path():
     xml = """<?xml version="1.0"?><rss><channel><title>Feed Title</title></channel></rss>"""
     original = crawlsmith_module.html_to_markdown

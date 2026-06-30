@@ -344,8 +344,15 @@ def _convert_html_to_markdown(content: str, base_url: str | None = None) -> str:
     if html_to_markdown is not None and not _looks_like_xml_document(content):
         try:
             # Use domdown with sensible defaults
+            frontmatter_opts: dict[str, object] = {}
+            if base_url:
+                frontmatter_opts = {
+                    "canonical_url": base_url,
+                    "source": base_url,
+                }
             options = DomdownOptions(
                 base_url=base_url,
+                frontmatter_opts=frontmatter_opts,
                 emit_frontmatter=True,
                 extract_metadata=True,
                 prefer_article_body=True,

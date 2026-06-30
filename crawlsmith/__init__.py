@@ -4,6 +4,6 @@ from crawlsmith.crawlsmith import CurlCffiScraper, FetchResult
 
 __author__ = "Juan Manuel Cristóbal Moreno"
 __email__ = "juanmcristobal"
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 __all__ = ["CurlCffiScraper", "FetchResult"]

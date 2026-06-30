@@ -1,6 +1,12 @@
 # History
 
 
+## 0.2.1 (2026-06-30)
+
+* Bump `domdown` to `0.3.1`
+* Add `frontmatter_opts` fallbacks for `canonical_url` and `source`
+
+
 ## 0.2.0 (2026-06-04)
 
 * Switch from `markdownify` to [`domdown`](https://github.com/juanmcristobal/domdown) for HTML-to-Markdown conversion
