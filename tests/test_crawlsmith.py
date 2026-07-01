@@ -15,7 +15,9 @@ from crawlsmith.crawlsmith import (ERROR_TYPE_BLOCKED, ERROR_TYPE_HTTP_403,
                                    _classify_exception, _classify_status,
                                    _convert_html_to_markdown,
                                    _extract_response_text, _header_map,
-                                   _is_gzip_payload, _looks_like_xml_document,
+                                   _is_gzip_payload, _looks_like_spa_shell,
+                                   _looks_like_xml_document,
+                                   _normalize_github_blob_url,
                                    generate_fingerprint)
 
 
@@ -88,6 +90,7 @@ def test_block_detector_handles_empty_and_soft_signals():
     assert BlockDetector.is_blocked("<html>cf-turnstile</html>", 520) is False
     assert BlockDetector.is_blocked("<html>cf-turnstile</html>", 200) is True
     assert BlockDetector.get_block_reason("") is None
+    assert BlockDetector.get_block_reason("<html><body>plain</body></html>") is None
 
 
 def test_extract_response_text_decompresses_gzip_payloads():
@@ -128,6 +131,25 @@ def test_extract_response_text_falls_back_when_invalid_gzip():
     assert (
         _extract_response_text(response, "https://example.com/file.gz")
         == "fallback text"
+    )
+
+
+def test_helper_gzip_detection_covers_content_type_and_extension():
+    assert (
+        _is_gzip_payload(
+            "https://example.com/file",
+            {"content-type": "application/gzip"},
+            b"payload",
+        )
+        is True
+    )
+    assert (
+        _is_gzip_payload(
+            "https://example.com/file.gz",
+            {},
+            b"payload",
+        )
+        is True
     )
 
 
@@ -173,6 +195,19 @@ def test_convert_html_to_markdown_adds_frontmatter_fallbacks(monkeypatch):
     assert captured["extract_metadata"] is True
 
 
+def test_convert_html_to_markdown_falls_back_when_domdown_raises(monkeypatch):
+    html = "<html><body><h1>Title</h1><p>Body</p></body></html>"
+
+    def fake_html_to_markdown(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(crawlsmith_module, "html_to_markdown", fake_html_to_markdown)
+    markdown = _convert_html_to_markdown(html)
+
+    assert "# Title" in markdown
+    assert "Body" in markdown
+
+
 def test_convert_html_to_markdown_skips_xml_warning_path():
     xml = """<?xml version="1.0"?><rss><channel><title>Feed Title</title></channel></rss>"""
     original = crawlsmith_module.html_to_markdown
@@ -193,6 +228,40 @@ def test_convert_html_to_markdown_skips_xml_warning_path():
     assert caught == []
 
 
+def test_looks_like_spa_shell_detects_common_shells():
+    shell = """
+    <!DOCTYPE html>
+    <html lang="en">
+      <body>
+        <noscript>
+          <strong>We're sorry but the website doesn't work properly without JavaScript enabled.</strong>
+        </noscript>
+        <div id="app"></div>
+      </body>
+    </html>
+    """
+
+    assert _looks_like_spa_shell(shell) is True
+    assert _looks_like_spa_shell("<html><body><h1>Hello</h1></body></html>") is False
+
+
+def test_normalize_github_blob_url_maps_to_raw():
+    assert _normalize_github_blob_url(
+        "https://github.com/PaloAltoNetworks/"
+        "Unit42-timely-threat-intel/blob/main/README.md"
+    ) == (
+        "https://raw.githubusercontent.com/PaloAltoNetworks/"
+        "Unit42-timely-threat-intel/main/README.md"
+    )
+    assert _normalize_github_blob_url(
+        "https://example.com/PaloAltoNetworks/"
+        "Unit42-timely-threat-intel/blob/main/README.md"
+    ) == (
+        "https://example.com/PaloAltoNetworks/"
+        "Unit42-timely-threat-intel/blob/main/README.md"
+    )
+
+
 def test_helper_functions_cover_headers_gzip_xml_and_fingerprint():
     response = DummyResponse(headers={"Content-Type": "text/plain", "X-Test": 1})
     headers = _header_map(response)
@@ -211,6 +280,25 @@ def test_helper_functions_cover_headers_gzip_xml_and_fingerprint():
     assert _looks_like_xml_document("<html></html>") is False
     assert fingerprint["http2"] is True
     assert "User-Agent" in fingerprint["headers"]
+
+
+def test_extract_page_identifiers_and_api_normalization():
+    assert crawlsmith_module._extract_page_identifiers(
+        "https://example.com/items/foo/bar"
+    ) == ["bar"]
+    assert (
+        crawlsmith_module._normalize_api_candidate_url(
+            "/api/cve/",
+            "https://example.com/items?id=ABC-123",
+        )
+        == "https://example.com/api/cve/ABC-123"
+    )
+
+
+def test_json_to_markdown_handles_invalid_and_scalar_json():
+    assert "```text" in crawlsmith_module._json_to_markdown("{")
+    scalar = crawlsmith_module._json_to_markdown("123")
+    assert "123" in scalar
 
 
 def test_extract_metadata_collects_document_social_and_http_fields():
@@ -258,6 +346,207 @@ def test_extract_metadata_collects_document_social_and_http_fields():
     assert metadata["http"]["final_url"] == "https://example.com/post"
     assert metadata["http"]["requested_url"] == "https://example.com/source"
     assert metadata["http"]["headers"]["content-type"] == "text/html; charset=utf-8"
+
+
+def test_extract_metadata_ignores_empty_meta_content():
+    html = """
+    <html>
+      <head>
+        <meta name="description" content="" />
+        <meta property="og:title" content="" />
+        <meta name="twitter:title" content="" />
+      </head>
+    </html>
+    """
+
+    metadata = crawlsmith_module._extract_metadata(
+        DummyResponse(headers={"content-type": "text/html"}),
+        html,
+        requested_url="https://example.com/source",
+        final_url=None,
+        status=200,
+    )
+
+    assert metadata["document"] == {}
+    assert metadata["open_graph"] == {}
+    assert metadata["twitter"] == {}
+
+
+def test_fetch_discovers_json_api_from_spa_shell(monkeypatch):
+    class HtmlResponse:
+        status_code = 200
+        url = "https://www.cve.org/cverecord?id=CVE-2026-12958"
+        headers = {"content-type": "text/html; charset=utf-8"}
+        content = (
+            b'<!DOCTYPE html><html lang="en"><body><noscript>'
+            b"We're sorry but the website doesn't work properly without JavaScript enabled."
+            b'</noscript><div id="app"></div><script type="module" src="/assets/index.js"></script></body></html>'
+        )
+        text = content.decode("utf-8")
+
+    class JsResponse:
+        status_code = 200
+        url = "https://www.cve.org/assets/index.js"
+        headers = {"content-type": "application/javascript"}
+        content = (
+            b"const apiBase='https://cveawg.mitre.org/api/cve/';"
+            b"const search='https://cveawg.mitre.org/restapiv1/search';"
+        )
+        text = content.decode("utf-8")
+
+    class ApiResponse:
+        status_code = 200
+        url = "https://cveawg.mitre.org/api/cve/CVE-2026-12958"
+        headers = {"content-type": "application/json"}
+        content = (
+            b'{"cveMetadata":{"cveId":"CVE-2026-12958","state":"PUBLISHED"},'
+            b'"containers":{"cna":{"title":"Arbitrary file write",'
+            b'"descriptions":[{"lang":"en","value":"CVE description."}]}}}'
+        )
+        text = content.decode("utf-8")
+
+    def fake_get(url, **kwargs):
+        if url == "https://www.cve.org/cverecord?id=CVE-2026-12958":
+            return HtmlResponse()
+        if url == "https://www.cve.org/assets/index.js":
+            return JsResponse()
+        if url == "https://cveawg.mitre.org/api/cve/CVE-2026-12958":
+            return ApiResponse()
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(
+        crawlsmith_module,
+        "curl_requests",
+        type("Requests", (), {"get": staticmethod(fake_get)})(),
+    )
+
+    scraper = CurlCffiScraper()
+    result = asyncio.run(
+        scraper.fetch("https://www.cve.org/cverecord?id=CVE-2026-12958")
+    )
+
+    assert result.ok is True
+    assert result.content is not None
+    assert "CVE-2026-12958" in result.content
+    assert "Arbitrary file write" in result.markdown
+    assert result.metadata["discovery"]["type"] == "spa_api"
+    assert (
+        result.metadata["discovery"]["candidate_url"]
+        == "https://cveawg.mitre.org/api/cve/CVE-2026-12958"
+    )
+
+
+def test_discover_spa_data_handles_failures_and_returns_none(monkeypatch):
+    class HtmlResponse:
+        status_code = 200
+        url = "https://example.com/page"
+        headers = {"content-type": "text/html; charset=utf-8"}
+        content = (
+            b'<html><body><script src="/one.js"></script>'
+            b'<script src="/two.js"></script></body></html>'
+        )
+        text = content.decode("utf-8")
+
+    class JsResponse:
+        status_code = 200
+        url = "https://example.com/one.js"
+        headers = {"content-type": "application/javascript"}
+        content = (
+            b"const a = '/api/'; const b = '/api/';"
+            b"const c = 'https://example.com/api/';"
+        )
+        text = content.decode("utf-8")
+
+    class TextResponse:
+        status_code = 200
+        url = "https://example.com/api/ABC-123"
+        headers = {"content-type": "text/html"}
+        content = b"<html><body>not json</body></html>"
+        text = content.decode("utf-8")
+
+    class JsonResponse:
+        status_code = 200
+        url = "https://example.com/api/ABC-123"
+        headers = {"content-type": "application/json"}
+        content = b'{"id":"ABC-123"}'
+        text = content.decode("utf-8")
+
+    def fake_get(url, **kwargs):
+        if url == "https://example.com/one.js":
+            raise DummyCurlError("boom")
+        if url == "https://example.com/two.js":
+            return JsResponse()
+        if url == "https://example.com/api/ABC-123":
+            return TextResponse()
+        if url == "https://example.com/api/ABC-123/":
+            return TextResponse()
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(
+        crawlsmith_module,
+        "curl_requests",
+        type("Requests", (), {"get": staticmethod(fake_get)})(),
+    )
+    monkeypatch.setattr(
+        crawlsmith_module,
+        "_CURL_REQUESTS_AND_TIMEOUT_TYPES",
+        (DummyCurlError,),
+    )
+
+    scraper = CurlCffiScraper()
+    result = asyncio.run(
+        scraper.stealth_request._discover_spa_data(
+            page_url="https://example.com/page?id=ABC-123",
+            html=HtmlResponse().text,
+            headers={"User-Agent": "ua"},
+            proxy=None,
+            proxy_url=None,
+        )
+    )
+
+    assert result is None
+
+
+def test_fetch_normalizes_github_blob_url_before_request(monkeypatch):
+    class Response:
+        status_code = 200
+        url = (
+            "https://raw.githubusercontent.com/PaloAltoNetworks/"
+            "Unit42-timely-threat-intel/main/README.md"
+        )
+        headers = {"content-type": "text/plain; charset=utf-8"}
+        content = b"# Title\n\nBody"
+        text = content.decode("utf-8")
+
+    expected = (
+        "https://raw.githubusercontent.com/PaloAltoNetworks/"
+        "Unit42-timely-threat-intel/main/README.md"
+    )
+
+    def fake_get(url, **kwargs):
+        assert url == expected
+        return Response()
+
+    monkeypatch.setattr(
+        crawlsmith_module,
+        "curl_requests",
+        type("Requests", (), {"get": staticmethod(fake_get)})(),
+    )
+
+    scraper = CurlCffiScraper()
+    result = asyncio.run(
+        scraper.fetch(
+            "https://github.com/PaloAltoNetworks/Unit42-timely-threat-intel/blob/main/README.md"
+        )
+    )
+
+    assert result.ok is True
+    assert result.url == (
+        "https://github.com/PaloAltoNetworks/"
+        "Unit42-timely-threat-intel/blob/main/README.md"
+    )
+    assert result.metadata["http"]["requested_url"] == result.url
+    assert result.metadata["http"]["final_url"] == expected
 
 
 def test_extract_metadata_tolerates_parser_failure(monkeypatch):

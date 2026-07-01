@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import gzip
+import json
 import random
 import re
 import ssl
@@ -13,6 +14,7 @@ from dataclasses import asdict, dataclass
 from html import unescape
 from html.parser import HTMLParser
 from typing import Any, Optional, cast
+from urllib.parse import parse_qs, urljoin, urlparse
 
 try:
     from curl_cffi import requests as curl_requests
@@ -339,6 +341,155 @@ def _looks_like_xml_document(content: str) -> bool:
     )
 
 
+def _normalize_github_blob_url(url: str) -> str:
+    parsed = urlparse(url)
+    if parsed.netloc.lower() != "github.com":
+        return url
+
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) < 5 or parts[2] != "blob":
+        return url
+
+    owner, repo, _, ref, *path_parts = parts
+    if not path_parts:
+        return url
+
+    raw_path = "/".join([owner, repo, ref, *path_parts])
+    normalized = "https://raw.githubusercontent.com/" f"{raw_path}"
+    if parsed.query:
+        normalized = f"{normalized}?{parsed.query}"
+    if parsed.fragment:
+        normalized = f"{normalized}#{parsed.fragment}"
+    return normalized
+
+
+def _looks_like_spa_shell(content: str) -> bool:
+    if not content:
+        return False
+
+    lowered = content.lower()
+    markers = (
+        "doesn't work properly without javascript enabled",
+        "enable javascript to continue",
+        "please enable javascript to continue",
+        'id="app"',
+        'id="root"',
+        "window.__initial_state__",
+        "window.__next_data__",
+        "window.__nuxt__",
+    )
+    if any(marker in lowered for marker in markers):
+        return True
+
+    text_only = re.sub(r"<[^>]+>", " ", content)
+    text_only = re.sub(r"\s+", " ", text_only).strip()
+    return (
+        len(text_only) < 120
+        and "<script" in lowered
+        and ("src=" in lowered or 'type="module"' in lowered)
+    )
+
+
+def _extract_script_urls_from_html(html: str, base_url: str) -> list[str]:
+    urls: list[str] = []
+    for match in re.finditer(
+        r"""(?is)<(?:script|link)\b[^>]*(?:src|href)=["']([^"']+)["'][^>]*>""",
+        html,
+    ):
+        candidate = match.group(1).strip()
+        if candidate:
+            urls.append(urljoin(base_url, candidate))
+    return list(dict.fromkeys(urls))
+
+
+def _extract_candidate_urls_from_text(
+    text: str, base_url: str | None = None
+) -> list[str]:
+    candidates: list[str] = []
+    absolute_urls = re.findall(r"""https?://[^"'`\s<>()]+""", text)
+    candidates.extend(absolute_urls)
+
+    if base_url:
+        relative_urls = re.findall(
+            r"""(?<![A-Za-z0-9_])/(?:api|restapi|graphql|v\d+/api|cveawg)[^"'`\s<>()]*""",
+            text,
+            flags=re.I,
+        )
+        candidates.extend(urljoin(base_url, value) for value in relative_urls)
+
+    return list(dict.fromkeys(candidates))
+
+
+def _extract_page_identifiers(page_url: str) -> list[str]:
+    parsed = urlparse(page_url)
+    identifiers: list[str] = []
+    query = parse_qs(parsed.query)
+    for key in ("id", "cve_id", "cve", "slug", "query", "q", "name"):
+        value = query.get(key, [""])[0].strip()
+        if value:
+            identifiers.append(value)
+
+    if not identifiers:
+        path_parts = [part for part in parsed.path.split("/") if part]
+        for part in reversed(path_parts):
+            if part and len(part) <= 120:
+                identifiers.append(part)
+                break
+
+    return list(dict.fromkeys(identifiers))
+
+
+def _normalize_api_candidate_url(candidate: str, page_url: str) -> str:
+    parsed = urlparse(candidate)
+    if not parsed.scheme:
+        candidate = urljoin(page_url, candidate)
+        parsed = urlparse(candidate)
+
+    if parsed.path.endswith("/") and any(
+        part in parsed.path.lower() for part in ("/api/", "/restapi/", "/graphql")
+    ):
+        identifiers = _extract_page_identifiers(page_url)
+        if identifiers:
+            candidate = candidate + identifiers[0]
+
+    return candidate
+
+
+def _json_to_markdown_payload(value: Any, *, indent: int = 0) -> list[str]:
+    prefix = "  " * indent
+    lines: list[str] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if isinstance(item, (dict, list)):
+                lines.append(f"{prefix}- {key}:")
+                lines.extend(_json_to_markdown_payload(item, indent=indent + 1))
+            else:
+                lines.append(f"{prefix}- {key}: {item}")
+    elif isinstance(value, list):
+        for item in value:
+            if isinstance(item, (dict, list)):
+                lines.append(f"{prefix}-")
+                lines.extend(_json_to_markdown_payload(item, indent=indent + 1))
+            else:
+                lines.append(f"{prefix}- {item}")
+    else:
+        lines.append(f"{prefix}{value}")
+    return lines
+
+
+def _json_to_markdown(text: str) -> str:
+    try:
+        value = json.loads(text)
+    except Exception:
+        return f"```text\n{text.strip()}\n```"
+
+    lines = _json_to_markdown_payload(value)
+    content = "\n".join(line for line in lines if line is not None).strip()
+    if not content:
+        return f"```json\n{text.strip()}\n```"
+    return content
+
+
 def _convert_html_to_markdown(content: str, base_url: str | None = None) -> str:
     """Convert HTML to Markdown using domdown."""
     if html_to_markdown is not None and not _looks_like_xml_document(content):
@@ -550,6 +701,7 @@ class StealthRequest:
                 error="curl_cffi is not installed",
             )
 
+        normalized_url = _normalize_github_blob_url(url)
         headers = generate_fingerprint()["headers"]
         last_result: FetchResult | None = None
 
@@ -568,7 +720,7 @@ class StealthRequest:
                 )
                 response = await asyncio.to_thread(
                     curl_requests.get,
-                    url,
+                    normalized_url,
                     headers=headers,
                     proxies=proxy_dict,
                     timeout=(self.connect_timeout, self.read_timeout),
@@ -579,6 +731,18 @@ class StealthRequest:
                 status = response.status_code
                 text = _extract_response_text(response, url)
                 final_url = cast(str | None, getattr(response, "url", None))
+
+                if status == 200 and _looks_like_spa_shell(text):
+                    discovered = await self._discover_spa_data(
+                        page_url=url,
+                        html=text,
+                        headers=headers,
+                        proxy=proxy,
+                        proxy_url=proxy_url,
+                    )
+                    if discovered is not None:
+                        return discovered
+
                 content_length = len(text.encode("utf-8"))
                 is_blocked = BlockDetector.is_blocked(text, status)
                 metadata = _extract_metadata(
@@ -672,6 +836,114 @@ class StealthRequest:
             )
 
         return await _attempt(None)
+
+    async def _discover_spa_data(
+        self,
+        *,
+        page_url: str,
+        html: str,
+        headers: dict[str, str],
+        proxy: str | None,
+        proxy_url: str | None,
+    ) -> FetchResult | None:
+        script_urls = _extract_script_urls_from_html(html, page_url)
+        if not script_urls:
+            return None
+
+        seen: set[str] = set()
+        candidate_urls: list[str] = []
+
+        async def _fetch_text(target_url: str) -> tuple[int, str, str | None] | None:
+            try:
+                response = await asyncio.to_thread(
+                    curl_requests.get,
+                    target_url,
+                    headers=headers,
+                    proxies=cast(
+                        Any, {"http": proxy, "https": proxy} if proxy else None
+                    ),
+                    timeout=(self.connect_timeout, self.read_timeout),
+                    verify=self.verify,
+                    allow_redirects=True,
+                    impersonate=cast(Any, self.impersonate),
+                )
+            except _CURL_REQUESTS_AND_TIMEOUT_TYPES:
+                return None
+
+            status = response.status_code
+            text = _extract_response_text(response, target_url)
+            final_url = cast(str | None, getattr(response, "url", None))
+            return status, text, final_url
+
+        for script_url in script_urls[:3]:
+            fetched = await _fetch_text(script_url)
+            if not fetched:
+                continue
+            status, script_text, _ = fetched
+            if status != 200 or not script_text:
+                continue
+            candidate_urls.extend(_extract_candidate_urls_from_text(script_text))
+            candidate_urls.extend(
+                _extract_candidate_urls_from_text(script_text, base_url=script_url)
+            )
+
+        candidate_urls.extend(
+            _extract_candidate_urls_from_text(html, base_url=page_url)
+        )
+
+        for candidate_url in candidate_urls:
+            normalized = _normalize_api_candidate_url(candidate_url, page_url)
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+
+            fetched = await _fetch_text(normalized)
+            if not fetched:
+                continue
+
+            status, body_text, final_url = fetched
+            if status != 200 or not body_text:
+                continue
+
+            if not body_text.lstrip().startswith(("{", "[")):
+                continue
+
+            markdown_text = _json_to_markdown(body_text)
+            content_length = len(body_text.encode("utf-8"))
+            metadata = {
+                "document": {},
+                "open_graph": {},
+                "twitter": {},
+                "http": {
+                    "status": status,
+                    "requested_url": page_url,
+                    "final_url": final_url or normalized,
+                    "content_type": "application/json",
+                    "content_encoding": None,
+                    "headers": {},
+                },
+                "discovery": {
+                    "type": "spa_api",
+                    "source_url": page_url,
+                    "candidate_url": normalized,
+                    "script_urls": script_urls,
+                },
+            }
+            return FetchResult(
+                ok=True,
+                url=page_url,
+                status=status,
+                content=body_text,
+                markdown=markdown_text,
+                metadata=metadata,
+                via_proxy=proxy is not None,
+                proxy_url=proxy_url,
+                content_length=content_length,
+                markdown_length=len(markdown_text),
+                is_blocked=False,
+            )
+
+        return None
 
 
 class CurlCffiScraper:
