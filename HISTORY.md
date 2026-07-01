@@ -1,6 +1,12 @@
 # History
 
 
+## 0.2.2 (2026-07-01)
+
+* Detect SPA shells and discover JSON APIs from linked bundles
+* Normalize GitHub `blob` URLs to `raw.githubusercontent.com` before fetching
+
+
 ## 0.2.1 (2026-06-30)
 
 * Bump `domdown` to `0.3.1`
