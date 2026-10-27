@@ -832,3 +832,71 @@ def test_fetch_with_proxies_returns_last_result_when_all_attempts_fail(monkeypat
 
     assert result.status == 500
     assert result.proxy_url == "p2"
+
+
+def test_extract_response_text_handles_multi_member_gzip():
+    payload = gzip.compress(b"part one ") + gzip.compress(b"part two")
+    response = DummyResponse(content=payload, headers={})
+
+    assert _extract_response_text(response, "https://example.com") == "part one part two"
+
+
+def test_extract_response_text_refuses_gzip_bomb(monkeypatch):
+    monkeypatch.setattr(crawlsmith_module, "MAX_DECOMPRESSED_BYTES", 1024)
+    response = DummyResponse(
+        content=gzip.compress(b"A" * 4096), text="fallback text", headers={}
+    )
+
+    assert _extract_response_text(response, "https://example.com") == "fallback text"
+
+
+def test_regexes_on_hostile_bodies_run_in_linear_time():
+    import time
+
+    hostile_bodies = [
+        "window.location.href=" * 20000,
+        "document.cookie=" * 20000,
+        "<" * 400000,
+        "<link " * 60000,
+    ]
+    for body in hostile_bodies:
+        start = time.perf_counter()
+        BlockDetector.is_blocked(body, 200)
+        crawlsmith_module._extract_script_urls_from_html(body, "https://example.com")
+        _looks_like_spa_shell(body)
+        # Quadratic versions took minutes on these inputs.
+        assert time.perf_counter() - start < 2, body[:30]
+
+
+def test_discover_spa_data_caps_candidate_requests(monkeypatch):
+    requested = []
+    html = '<script src="/a.js"></script>' + "".join(
+        f"https://host{i}.example/x " for i in range(500)
+    )
+
+    def fake_get(url, **kwargs):
+        requested.append(url)
+        raise DummyCurlError("down")
+
+    monkeypatch.setattr(
+        crawlsmith_module,
+        "curl_requests",
+        type("Requests", (), {"get": staticmethod(fake_get)})(),
+    )
+    monkeypatch.setattr(
+        crawlsmith_module, "_CURL_REQUESTS_AND_TIMEOUT_TYPES", (DummyCurlError,)
+    )
+
+    result = asyncio.run(
+        CurlCffiScraper().stealth_request._discover_spa_data(
+            page_url="https://example.com/page",
+            html=html,
+            headers={},
+            proxy=None,
+            proxy_url=None,
+        )
+    )
+
+    assert result is None
+    # 1 script fetch + capped candidate fetches.
+    assert len(requested) == 1 + crawlsmith_module.MAX_DISCOVERY_CANDIDATES

@@ -213,6 +213,16 @@ asyncio.run(main())
 If you need to disable TLS certificate verification for a controlled internal
 environment, set `verify=False`.
 
+### Security Notes
+
+Crawlsmith fetches whatever the target page leads it to: it follows redirects
+and, for JavaScript app shells, requests up to 20 API URLs found in the page or
+its scripts, which may live on other hosts. It does not block private,
+loopback, or cloud metadata addresses. If you fetch untrusted URLs from a
+server, run it with egress restrictions (e.g. a proxy or firewall that denies
+internal networks). Gzip payloads larger than 50 MB decompressed are not
+expanded.
+
 ### Handle Errors Explicitly
 
 Failures are returned as structured results instead of raising request errors in
