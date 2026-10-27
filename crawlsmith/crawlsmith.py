@@ -5,11 +5,11 @@
 from __future__ import annotations
 
 import asyncio
-import gzip
 import json
 import random
 import re
 import ssl
+import zlib
 from dataclasses import asdict, dataclass
 from html import unescape
 from html.parser import HTMLParser
@@ -45,6 +45,8 @@ NON_RETRYABLE_HTTP_STATUSES = {404, 410}
 DEFAULT_CONNECT_TIMEOUT_SECONDS = 5
 DEFAULT_READ_TIMEOUT_SECONDS = 15
 MIN_CONTENT_LENGTH = 5000
+MAX_DECOMPRESSED_BYTES = 50 * 1024 * 1024
+MAX_DISCOVERY_CANDIDATES = 20
 
 DEFAULT_USER_AGENTS = [
     # Windows and macOS User Agents
@@ -204,8 +206,8 @@ class BlockDetector:
         re.compile(r"hcaptcha", re.I),
     ]
     JS_CHALLENGE_PATTERNS = [
-        re.compile(r"window\.location\.href\s*=.*challenge", re.I),
-        re.compile(r"document\.cookie\s*=.*challenge", re.I),
+        re.compile(r"window\.location\.href\s*=.{0,200}challenge", re.I),
+        re.compile(r"document\.cookie\s*=.{0,200}challenge", re.I),
         re.compile(r"challenge-platform", re.I),
         re.compile(r"challenge-form", re.I),
         re.compile(r"jschal-answer", re.I),
@@ -244,7 +246,7 @@ class BlockDetector:
         if looks_like_xml:
             return False
 
-        text_only = re.sub(r"<[^>]+>", " ", response_text)
+        text_only = re.sub(r"<[^<>]+>", " ", response_text)
         text_only = re.sub(r"\s+", " ", text_only).strip()
         text_len = len(text_only)
         text_ratio = text_len / max(len(response_text), 1)
@@ -306,6 +308,23 @@ def _is_gzip_payload(url: str, headers: dict[str, str], body: bytes) -> bool:
     return False
 
 
+def _bounded_gunzip(body: bytes) -> bytes | None:
+    """Decompress (multi-member) gzip, or None if invalid or over MAX_DECOMPRESSED_BYTES."""
+    out = bytearray()
+    data = body
+    try:
+        while data:
+            decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
+            # +1 so hitting the cap exactly is distinguishable from exceeding it.
+            out += decompressor.decompress(data, MAX_DECOMPRESSED_BYTES - len(out) + 1)
+            if len(out) > MAX_DECOMPRESSED_BYTES or not decompressor.eof:
+                return None
+            data = decompressor.unused_data.lstrip(b"\x00")
+    except zlib.error:
+        return None
+    return bytes(out)
+
+
 def _extract_response_text(response: Any, url: str) -> str:
     body = getattr(response, "content", None)
     if isinstance(body, bytearray):
@@ -314,10 +333,9 @@ def _extract_response_text(response: Any, url: str) -> str:
     if isinstance(body, bytes) and body:
         headers = _header_map(response)
         if _is_gzip_payload(url, headers, body):
-            try:
-                return gzip.decompress(body).decode("utf-8", errors="replace")
-            except OSError:
-                pass
+            data = _bounded_gunzip(body)
+            if data is not None:
+                return data.decode("utf-8", errors="replace")
 
     text = getattr(response, "text", None)
     if isinstance(text, str):
@@ -381,7 +399,7 @@ def _looks_like_spa_shell(content: str) -> bool:
     if any(marker in lowered for marker in markers):
         return True
 
-    text_only = re.sub(r"<[^>]+>", " ", content)
+    text_only = re.sub(r"<[^<>]+>", " ", content)
     text_only = re.sub(r"\s+", " ", text_only).strip()
     return (
         len(text_only) < 120
@@ -393,7 +411,7 @@ def _looks_like_spa_shell(content: str) -> bool:
 def _extract_script_urls_from_html(html: str, base_url: str) -> list[str]:
     urls: list[str] = []
     for match in re.finditer(
-        r"""(?is)<(?:script|link)\b[^>]*(?:src|href)=["']([^"']+)["'][^>]*>""",
+        r"""(?is)<(?:script|link)\b[^<>]*(?:src|href)=["']([^"']+)["'][^<>]*>""",
         html,
     ):
         candidate = match.group(1).strip()
@@ -530,7 +548,7 @@ def _convert_html_to_markdown(content: str, base_url: str | None = None) -> str:
     )
     for pattern, replacement in replacements:
         text = re.sub(pattern, replacement, text, flags=re.I | re.S)
-    text = re.sub(r"<[^>]+>", "", text)
+    text = re.sub(r"<[^<>]+>", "", text)
     text = unescape(text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     text = re.sub(r"[ \t]+\n", "\n", text)
@@ -895,6 +913,9 @@ class StealthRequest:
             normalized = _normalize_api_candidate_url(candidate_url, page_url)
             if normalized in seen:
                 continue
+            # Bound fan-out: a hostile page could otherwise list thousands of URLs.
+            if len(seen) >= MAX_DISCOVERY_CANDIDATES:
+                break
             seen.add(normalized)
 
             fetched = await _fetch_text(normalized)

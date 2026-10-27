@@ -1,3 +1,3 @@
-Click==8.1.7
-curl_cffi>=0.7.0
-domdown>=0.3.1
+click>=8.1,<9
+curl_cffi>=0.15
+domdown>=0.3.7
