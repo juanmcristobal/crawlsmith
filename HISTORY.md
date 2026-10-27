@@ -1,6 +1,15 @@
 # History
 
 
+## 0.3.0 (2026-10-27)
+
+* Cap gzip decompression at 50 MB and SPA API discovery at 20 requests
+* Fix quadratic regexes in block detection and script URL extraction
+* Document SSRF/egress considerations in README
+* Require `domdown>=0.3.7`, `curl_cffi>=0.15`; relax `click` to `>=8.1,<9`
+* Update dev dependencies with known vulnerabilities
+
+
 ## 0.2.2 (2026-07-01)
 
 * Detect SPA shells and discover JSON APIs from linked bundles
